@@ -3,6 +3,7 @@ extern crate time;
 use git2::{Commit, DiffOptions, ObjectType, Repository, Signature, Time};
 use git2::{DiffFormat, Error, Pathspec};
 use std::str;
+use wgpu_glyph::{GlyphBrushBuilder, Scale, Section};
 
 fn main() {
 
@@ -76,7 +77,7 @@ fn main() {
         backends: wgpu::BackendBit::PRIMARY,
     }).unwrap();
 
-    let (device, mut queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+    let (mut device, mut queue) = adapter.request_device(&wgpu::DeviceDescriptor {
         extensions: wgpu::Extensions {
             anisotropic_filtering: false,
         },
@@ -132,16 +133,23 @@ fn main() {
         alpha_to_coverage_enabled: false,
     });
 
+    let render_format = wgpu::TextureFormat::Bgra8UnormSrgb;
+
     let mut swap_chain = device.create_swap_chain(
         &surface,
         &wgpu::SwapChainDescriptor {
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            format: render_format,
             width: size.width.round() as u32,
             height: size.height.round() as u32,
             present_mode: wgpu::PresentMode::Vsync,
         },
     );
+
+    // Prepare glyph_brush
+    let inconsolata: &[u8] = include_bytes!("../res/Inconsolata-Regular.ttf");
+    let mut glyph_brush = GlyphBrushBuilder::using_font_bytes(inconsolata)
+        .build(&mut device, render_format);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = if cfg!(feature = "metal-auto-capture") {
@@ -184,6 +192,26 @@ fn main() {
                     rpass.set_bind_group(0, &bind_group, &[]);
                     rpass.draw(0 .. 3, 0 .. 1);
                 }
+
+                glyph_brush.queue(Section {
+                    text: "Hello wgpu_glyph!",
+                    screen_position: (30.0, 90.0),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    scale: Scale { x: 40.0, y: 40.0 },
+                    bounds: (size.width as f32, size.height as f32),
+                    ..Section::default()
+                });
+
+                // Draw the text!
+                glyph_brush
+                    .draw_queued(
+                        &mut device,
+                        &mut encoder,
+                        &frame.view,
+                        size.width.round() as u32,
+                        size.height.round() as u32,
+                    )
+                    .expect("Draw queued");
 
                 queue.submit(&[encoder.finish()]);
             }
