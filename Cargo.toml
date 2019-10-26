@@ -12,3 +12,4 @@ shaderc = "0.6"
 git2 = "0.10"
 time = "0.1.39"
 wgpu_glyph = { version = "0.4.0", git = "https://github.com/hecrj/wgpu_glyph", rev = "48daa98f5f785963838b4345e86ac40eac095ba9" }
+chrono = "*"

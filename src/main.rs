@@ -1,9 +1,11 @@
 extern crate shaderc;
+extern crate chrono;
 extern crate time;
 use git2::{Commit, Repository, Time};
 use git2::{Error};
 use std::str;
-use wgpu_glyph::{GlyphBrushBuilder, Scale, Section};
+use wgpu_glyph::{GlyphBrushBuilder, Section};
+use chrono::{Utc};
 
 fn main() {
 
@@ -130,6 +132,9 @@ fn main() {
     let mut glyph_brush = GlyphBrushBuilder::using_font_bytes(inconsolata)
         .build(&mut device, render_format);
 
+    let mut frames = 0.0;
+    let mut time = Utc::now();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = if cfg!(feature = "metal-auto-capture") {
             ControlFlow::Exit
@@ -172,14 +177,17 @@ fn main() {
                     rpass.draw(0 .. 3, 0 .. 1);
                 }
 
+                frames += 1.0;
+                let time_now = Utc::now();
+                let duration = (time_now - time).num_milliseconds() as f64;
                 glyph_brush.queue(Section {
-                    text: "Hello wgpu_glyph!",
-                    screen_position: (30.0, 90.0),
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    scale: Scale { x: 40.0, y: 40.0 },
-                    bounds: (size.width as f32, size.height as f32),
+                    text: &(format!("{:.*}", 2, frames/duration*1000.0) + " fps"),
                     ..Section::default()
                 });
+                if duration > 1000.0 {
+                    time = time_now;
+                    frames = 0.0;
+                }
 
                 // Draw the text!
                 glyph_brush
