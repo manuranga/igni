@@ -1,22 +1,20 @@
-extern crate shaderc;
 extern crate chrono;
+extern crate shaderc;
 extern crate time;
-use git2::{Commit, Repository, Time};
-use git2::{Error};
+use chrono::Utc;
+use git2::Error;
+use git2::{Commit, Repository};
 use std::str;
-use wgpu_glyph::{GlyphBrushBuilder, Section};
-use chrono::{Utc};
+use wgpu_glyph::{GlyphBrushBuilder, Scale, Section};
+pub mod model;
+use model::{GApp, GCommit};
+use std::sync::{Arc, RwLock};
+use std::thread;
 
 fn main() {
-
-    match run() {
-        Ok(()) => {}
-        Err(e) => println!("error: {}", e)
-    }
-
     use winit::{
-        event_loop::{ControlFlow, EventLoop},
         event,
+        event_loop::{ControlFlow, EventLoop},
     };
 
     env_logger::init();
@@ -25,9 +23,7 @@ fn main() {
     #[cfg(not(feature = "gl"))]
     let (_window, size, surface) = {
         let window = winit::window::Window::new(&event_loop).unwrap();
-        let size = window
-            .inner_size()
-            .to_physical(window.hidpi_factor());
+        let size = window.inner_size().to_physical(window.hidpi_factor());
 
         let surface = wgpu::Surface::create(&window);
         (window, size, surface)
@@ -56,7 +52,8 @@ fn main() {
     let adapter = wgpu::Adapter::request(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::Default,
         backends: wgpu::BackendBit::PRIMARY,
-    }).unwrap();
+    })
+    .unwrap();
 
     let (mut device, mut queue) = adapter.request_device(&wgpu::DeviceDescriptor {
         extensions: wgpu::Extensions {
@@ -71,9 +68,8 @@ fn main() {
     let fs_bytes = load_glsl(include_str!("shader.frag"), shaderc::ShaderKind::Fragment);
     let fs_module = device.create_shader_module(&fs_bytes);
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        bindings: &[],
-    });
+    let bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { bindings: &[] });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         bindings: &[],
@@ -129,8 +125,26 @@ fn main() {
 
     // Prepare glyph_brush
     let inconsolata: &[u8] = include_bytes!("../res/Inconsolata-Regular.ttf");
-    let mut glyph_brush = GlyphBrushBuilder::using_font_bytes(inconsolata)
-        .build(&mut device, render_format);
+    let mut glyph_brush =
+        GlyphBrushBuilder::using_font_bytes(inconsolata).build(&mut device, render_format);
+
+    let state: Arc<RwLock<Option<GApp>>> = Arc::new(RwLock::new(None));
+    let state_reader = state.clone();
+
+    thread::spawn(move || {
+        let repo = Repository::open(".").unwrap();
+        let commits = list_commits(&repo).unwrap();
+        let commits: Vec<GCommit> = commits
+            .iter()
+            .map(|c| GCommit {
+                author: String::from(c.author().name().unwrap()),
+                id: c.id().to_string(),
+            })
+            .collect();
+        let mut shared_app = state.write().unwrap();
+        let app: GApp = GApp { commits };
+        *shared_app = Some(app);
+    });
 
     let mut frames = 0.0;
     let mut time = Utc::now();
@@ -174,14 +188,41 @@ fn main() {
                     });
                     rpass.set_pipeline(&render_pipeline);
                     rpass.set_bind_group(0, &bind_group, &[]);
-                    rpass.draw(0 .. 3, 0 .. 1);
+                    rpass.draw(0..3, 0..1);
+                }
+
+                let ptr_opt_app: &Option<GApp> = &state_reader.read().unwrap();
+                let opt_app: Option<&GApp> = ptr_opt_app.as_ref();
+
+                match opt_app {
+                    Some(app) => {
+                        let mut h = 0.0;
+                        let scale = Scale { x: 40.0, y: 40.0 };
+                        for commit in &app.commits {
+                            h += 30.0;
+                            glyph_brush.queue(Section {
+                                text: &commit.author,
+                                screen_position: (30.0, h),
+                                scale,
+                                ..Section::default()
+                            });
+
+                            glyph_brush.queue(Section {
+                                text: &commit.id,
+                                screen_position: (500.0, h),
+                                scale,
+                                ..Section::default()
+                            });
+                        }
+                    }
+                    None => {}
                 }
 
                 frames += 1.0;
                 let time_now = Utc::now();
                 let duration = (time_now - time).num_milliseconds() as f64;
                 glyph_brush.queue(Section {
-                    text: &(format!("{:.*}", 2, frames/duration*1000.0) + " fps"),
+                    text: &(format!("{:.*}", 2, frames / duration * 1000.0) + " fps"),
                     ..Section::default()
                 });
                 if duration > 1000.0 {
@@ -207,76 +248,28 @@ fn main() {
     });
 }
 
-pub fn load_glsl(code: &str, stage:  shaderc::ShaderKind) -> Vec<u32> {
+pub fn load_glsl(code: &str, stage: shaderc::ShaderKind) -> Vec<u32> {
     let mut compiler = shaderc::Compiler::new().unwrap();
     let options = shaderc::CompileOptions::new().unwrap();
-    let binary_result = compiler.compile_into_spirv(
-        code, stage,
-        "shader.glsl", "main", Some(&options)).unwrap();
+    let binary_result = compiler
+        .compile_into_spirv(code, stage, "shader.glsl", "main", Some(&options))
+        .unwrap();
     let spirv_bin = binary_result.as_binary_u8();
     wgpu::read_spirv(std::io::Cursor::new(&spirv_bin[..])).unwrap()
 }
 
-fn run() -> Result<(), Error> {
-    let repo = Repository::open(".")?;
+fn list_commits<'a>(repo: &'a Repository) -> Result<Vec<Commit<'a>>, Error> {
     let mut revwalk = repo.revwalk()?;
     revwalk.set_sorting(git2::Sort::TOPOLOGICAL);
     revwalk.push_head()?;
 
-    let revwalk = revwalk
+    let revwalk: Vec<_> = revwalk
         .filter_map(|id| {
             let id = id.unwrap();
             let commit = repo.find_commit(id).unwrap();
             Some(commit)
         })
-        .skip(0)
-        .take(std::usize::MAX);
+        .collect();
 
-    // print!
-    for commit in revwalk {
-        print_commit(&commit);
-    }
-
-    Ok(())
-}
-
-fn print_commit(commit: &Commit) {
-    println!("commit {}", commit.id());
-
-    if commit.parents().len() > 1 {
-        print!("Merge:");
-        for id in commit.parent_ids() {
-            print!(" {:.8}", id);
-        }
-        println!();
-    }
-
-    let author = commit.author();
-    println!("Author: {}", author);
-    print_time(&author.when(), "Date:   ");
-    println!();
-
-    for line in String::from_utf8_lossy(commit.message_bytes()).lines() {
-        println!("    {}", line);
-    }
-    println!();
-}
-
-fn print_time(time: &Time, prefix: &str) {
-    let (offset, sign) = match time.offset_minutes() {
-        n if n < 0 => (-n, '-'),
-        n => (n, '+'),
-    };
-    let (hours, minutes) = (offset / 60, offset % 60);
-    let ts = time::Timespec::new(time.seconds() + (time.offset_minutes() as i64) * 60, 0);
-    let time = time::at(ts);
-
-    println!(
-        "{}{} {}{:02}{:02}",
-        prefix,
-        time.strftime("%a %b %e %T %Y").unwrap(),
-        sign,
-        hours,
-        minutes
-    );
+    Ok(revwalk)
 }
